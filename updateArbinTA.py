@@ -108,14 +108,14 @@ def fetch_qb_records(tester_name: str, ch_updates: list[str]) -> pd.DataFrame:
     full_channel_id = [tester_name + ' _ ' + channel for channel in ch_updates]
     conditions = [f"{{438.EX.'{ch}'}}" for ch in full_channel_id]
     query = " OR ".join(conditions)
-    token = "bytuu3_wfx_53f6zibdnpvd5bavwjd26avh8"  # dbrobot user token
+    token = "qb_user_token"  # dbrobot user token
     headers = {
-        'QB-Realm-Hostname': "https://ampriusinc.quickbase.com",
+        'QB-Realm-Hostname': "https://company.quickbase.com",
         'User-Agent': 'Amprius',
         'Authorization': 'QB-USER-TOKEN ' + token
     }
     body = {
-        "from": "bqg4mcgfv",  # Cell Test table
+        "from": "table_id",  # Cell Test table
         "select": fid_list,
         "where": query
     }
@@ -176,14 +176,14 @@ def calculate_status_changes(df: pd.DataFrame, ch_updates, tn_updates, st_update
 def import_to_qb(records_to_update: list[dict]):
     # Prepare the API Request
     url = f"https://api.quickbase.com/v1/records"
-    token = "bytuu3_wfx_53f6zibdnpvd5bavwjd26avh8"   # dbrobot user token
+    token = "qb_user_token"   # dbrobot user token
     headers = {
-        "QB-Realm-Hostname": "https://ampriusinc.quickbase.com",
+        "QB-Realm-Hostname": "https://company.quickbase.com",
         "Authorization": 'QB-USER-TOKEN ' + token,
         "Content-Type": "application/json"
     }
     payload = {
-        "to": "bqg4mcgfv",
+        "to": "table_id",
         "data": records_to_update,
         "mergeFieldId": '3'
     }
