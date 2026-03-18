@@ -1,209 +1,172 @@
-from bs4 import BeautifulSoup
-from datetime import datetime, timedelta
 import re
 import requests
 import pandas as pd
+from datetime import datetime, timedelta
+from bs4 import BeautifulSoup
+from pydantic import BaseModel, Field, field_validator  # Updated import
 
 
-def extract_arbin_log(file_path: str) -> tuple[list[str], list[str]]:
-    # Extract and clean up timestamps and following messages
-    with open(file_path, "r", encoding="windows-1252") as f:
-        soup = BeautifulSoup(f, "html.parser")
+# 1. Pydantic V2 Models
+class ArbinActivity(BaseModel):
+    """Validates the structure of a single log entry activity."""
+    time: datetime
+    channel: str
+    test_name: str = Field(alias="TN")
+    status_update: str
 
-    timestamps = soup.find_all("font", color="#008000")
-    clean_ts = [" ".join(timestamp.text.split()) for timestamp in timestamps]
-    dt_str = [ts[1:21] for ts in clean_ts]  # text only, e.g., "2026-02-25, 07:59:13"
+    @field_validator('channel')
+    @classmethod
+    def validate_channel(cls, v: str) -> str:
+        """Pydantic V2 style validator for the channel field."""
+        if v == "N/A":
+            return v
+        if not v.isdigit():
+            raise ValueError(f"Channel must be numeric or N/A, got {v}")
+        return v
 
-    messages = soup.find_all("font", color="#000000")
-    ms_str = [msg.text.strip() for msg in messages]
 
-    return dt_str, ms_str
+class QBUpdateRecord(BaseModel):
+    """Ensures updates sent to QuickBase match the required JSON structure."""
+    test_id: int
+    new_status: str
+
+    def to_qb_format(self) -> dict:
+        return {
+            "3": {"value": self.test_id},
+            "76": {"value": self.new_status}
+        }
 
 
-def extract_latest_activities(
-        dt_str: list[str],
-        ms_str: list[str],
-        cutoff: datetime
-) -> list[dict]:
+# 2. Arbin Parser Class
+class ArbinLogParser:
+    def __init__(self, file_path: str):
+        self.file_path = file_path
 
-    # Search for the test names and channels of "start test" activities within the threshold
-    start_activities = [
-        (ts, msg) for (ts, msg) in zip(dt_str, ms_str)
-        if ("Succeeded to start test" in msg or "Succeeded to resume" in msg)
-        and datetime.strptime(ts, "%Y-%m-%d, %H:%M:%S") > cutoff
-    ]
-    start_tasks = [msg for (ts, msg) in start_activities]
-    start_times = [ts for (ts, msg) in start_activities]
-    test_names = []
-    start_channels = []
-    for task in start_tasks:
-        match_testname = re.search(r"start test ([\d_]+)", task)  # RegEx
-        match_channel = re.search(r"Channel (\d+)", task)  # RegEx
-        if match_testname:
-            test_names.append(match_testname.group(1))
+    def _extract_raw_data(self) -> tuple[list[str], list[str]]:
+        #
+        with open(self.file_path, "r", encoding="windows-1252") as f:
+            soup = BeautifulSoup(f, "html.parser")
+
+        timestamps = [[" ".join(ts.text.split())][0][1:21] for ts in soup.find_all("font", color="#008000")]
+        messages = [msg.text.strip() for msg in soup.find_all("font", color="#000000")]
+        return timestamps, messages
+
+    def get_latest_activities(self, hours_threshold: int = 4) -> list[ArbinActivity]:
+        #
+        cutoff = datetime.now() - timedelta(hours=hours_threshold)
+        dt_str, ms_str = self._extract_raw_data()
+
+        activities = []
+        for ts, msg in zip(dt_str, ms_str):
+            event_time = datetime.strptime(ts, "%Y-%m-%d, %H:%M:%S")
+            if event_time <= cutoff:
+                continue
+
+            status = None
+            if any(kw in msg for kw in ["Succeeded to start test", "Succeeded to resume"]):
+                status = "start"
+            elif "Succeeded to stop" in msg:
+                status = "stop"
+
+            if status:
+                tn_match = re.search(r"start test ([\d_]+)", msg)
+                ch_match = re.search(r"Channel (\d+)", msg)
+
+                # Using model_validate (V2) or standard constructor
+                activities.append(ArbinActivity(
+                    time=event_time,
+                    channel=ch_match.group(1) if ch_match else "N/A",
+                    TN=tn_match.group(1) if tn_match else "N/A",
+                    status_update=status
+                ))
+        return activities
+
+
+# 3. QuickBase Client Class
+class QuickBaseClient:
+    def __init__(self, token: str, table_id: str):
+        self.headers = {
+            "QB-Realm-Hostname": "https://ampriusinc.quickbase.com",
+            "Authorization": f"QB-USER-TOKEN {token}",
+            "Content-Type": "application/json"
+        }
+        self.table_id = table_id
+        self.base_url = "https://api.quickbase.com/v1"
+
+    def fetch_records(self, tester_name: str, channels: list[str]) -> pd.DataFrame:
+        #
+        full_ids = [f"{tester_name} _ {ch}" for ch in channels]
+        query = " OR ".join([f"{{438.EX.'{ch}'}}" for ch in full_ids])
+
+        body = {"from": self.table_id, "select": [438, 177, 3, 76], "where": query}
+        r = requests.post(f"{self.base_url}/records/query", headers=self.headers, json=body)
+        return pd.json_normalize(r.json().get('data', []))
+
+    def push_updates(self, updates: list[QBUpdateRecord]):
+        #
+        if not updates:
+            print("No updates needed.")
+            return
+
+        payload = {
+            "to": self.table_id,
+            "data": [u.to_qb_format() for u in updates],
+            "mergeFieldId": "3"
+        }
+        r = requests.post(f"{self.base_url}/records", headers=self.headers, json=payload)
+        if r.status_code == 200:
+            print(f"✅ Successfully updated {len(updates)} records.")
         else:
-            test_names.append("N/A")
-        if match_channel:
-            start_channels.append(match_channel.group(1))
-        else:
-            start_channels.append("N/A")
-    res1 = [
-        {"time": ts,
-         "channel": channel,
-         "TN": tn,
-         "status_update": "start"}
-        for (ts, channel, tn) in zip(start_times, start_channels, test_names)
-    ]
-
-    # Search for the test names and channels of "stop" activities within the threshold
-    stop_activities = [
-        (ts, msg) for (ts, msg) in zip(dt_str, ms_str)
-        if "Succeeded to stop" in msg and datetime.strptime(ts, "%Y-%m-%d, %H:%M:%S") > cutoff
-    ]
-    stop_tasks = [msg for (ts, msg) in stop_activities]
-    stop_times = [ts for (ts, msg) in stop_activities]
-    stop_channels = []
-    for task in stop_tasks:
-        match_channel = re.search(r"Channel (\d+)", task)  # RegEx
-        if match_channel:
-            stop_channels.append(match_channel.group(1))
-        else:
-            stop_channels.append("N/A")
-    res2 = [
-        {"time": ts,
-         "channel": channel,
-         "TN": "N/A",
-         "status_update": "stop"}
-        for (ts, channel) in zip(stop_times, stop_channels)
-    ]
-    activity_list = res1 + res2
-    return activity_list
+            print(f"❌ Error: {r.text}")
 
 
-def get_updates(activity_list: list[dict]) -> tuple[list, list, list]:
-    """Get latest activity on each channel."""
-    activity_list.sort(key=lambda x: x["time"])  # 'lambda' sort
-    channel_history = {}  # dictionary to track the history of each channel
+# 4. Orchestrator (Sync Manager)
+class ArbinSyncManager:
+    def __init__(self, tester_name: str, log_path: str):
+        self.tester_name = tester_name
+        self.parser = ArbinLogParser(log_path)
+        self.qb = QuickBaseClient(
+            token="bytuu3_wfx_53f6zibdnpvd5bavwjd26avh8",
+            table_id="bqg4mcgfv"
+        )
 
-    # Loop through all sorted activities and create a sorted list of activities for each channel
-    for activity in activity_list:
-        ch = activity["channel"]
-        # If we haven't seen this channel yet, create an empty list for it
-        if ch not in channel_history:
-            channel_history[ch] = []
-        # Add the activity to this channel's history
-        channel_history[ch].append(activity)
+    def run(self):
+        #
+        activities = self.parser.get_latest_activities()
+        if not activities:
+            print("No recent log activity found.")
+            return
 
-    # Get latest action on each channel
-    last_actions = [history[-1] for (ch, history) in channel_history.items()]  # list of dictionaries, row-based
-    ch_updates = [row["channel"] for row in last_actions]
-    tn_updates = [row["TN"] for row in last_actions]
-    st_updates = [row["status_update"] for row in last_actions]
-    return ch_updates, tn_updates, st_updates
+        activities.sort(key=lambda x: x.time)
+        latest_map = {a.channel: a for a in activities}
 
+        df = self.qb.fetch_records(self.tester_name, list(latest_map.keys()))
+        if df.empty:
+            print("No matching records found in QuickBase.")
+            return
 
-def fetch_qb_records(tester_name: str, ch_updates: list[str]) -> pd.DataFrame:
-    """Fetch QuickBase records that matches the channel ID from the tester log."""
-    fid_list = [438, 177, 3, 76]
-    full_channel_id = [tester_name + ' _ ' + channel for channel in ch_updates]
-    conditions = [f"{{438.EX.'{ch}'}}" for ch in full_channel_id]
-    query = " OR ".join(conditions)
-    token = "bytuu3_wfx_53f6zibdnpvd5bavwjd26avh8"  # dbrobot user token
-    headers = {
-        'QB-Realm-Hostname': "https://ampriusinc.quickbase.com",
-        'User-Agent': 'Amprius',
-        'Authorization': 'QB-USER-TOKEN ' + token
-    }
-    body = {
-        "from": "bqg4mcgfv",  # Cell Test table
-        "select": fid_list,
-        "where": query
-    }
-    r = requests.post(
-        'https://api.quickbase.com/v1/records/query',
-        headers=headers,
-        json=body
-    )
-    #json_export = (json.dumps(r.json(), indent=4))
-    #df = pd.json_normalize(json.loads(json_export)['data'])
-    return pd.json_normalize(r.json()['data'])
+        updates = []
+        tn_lookup = {a.test_name: a.status_update for a in activities if a.test_name != "N/A"}
 
+        for _, row in df.iterrows():
+            fid_map = {"438": "ch_id", "177": "tn", "3": "id", "76": "status"}
+            data = {fid_map.get(col.split('.')[0], col): val for col, val in row.items()}
 
-def calculate_status_changes(df: pd.DataFrame, ch_updates, tn_updates, st_updates) -> list[dict]:
-    """Determine status changes from QuickBase to Tester log"""
-    if df.empty:
-        return []
+            ch_match = re.search(r" _ (\d+)", str(data['ch_id']))
+            ch_num = ch_match.group(1) if ch_match else ""
 
-    # Map columns
-    fid_to_name = {3: "Test ID", 76: "Status", 177: "Test Name - Actual", 438: "Test Channel - Channel ID"}
-    df.columns = [fid_to_name.get(int(col.split('.')[0]), col) for col in df.columns]
+            new_status = data['status']
+            if data['tn'] in tn_lookup:
+                new_status = tn_lookup[data['tn']]
+            elif ch_num in latest_map:
+                new_status = latest_map[ch_num].status_update
 
-    df["Channel Number"] = df["Test Channel - Channel ID"].apply(
-        lambda x: re.search(r" _ (\d+)", str(x)).group(1) if re.search(r" _ (\d+)", str(x)) else "N/A"
-    )  # use a lambda to safely get RegEx group(1)
+            if new_status != data['status']:
+                updates.append(QBUpdateRecord(test_id=int(data['id']), new_status=new_status))
 
-    # Get build a new column "New Status" for the df using Dictionary lookup
-    tn_lookup = {tn: status for tn, status in zip(tn_updates, st_updates) if tn != "N/A"}
-    ch_lookup = {ch: status for ch, status in zip(ch_updates, st_updates) if ch != "N/A"}
-    new_statuses = []
-    for index, row in df.iterrows():
-        qb_tn = str(row.get("Test Name - Actual", ""))
-        qb_ch_num = str(row.get("Channel Number", ""))
-        qb_status = row.get("Status")
-        # Does the Test Name match? If not, does the Channel match? Otherwise, keep old status.
-        # due to priority given to tn_lookup, cannot collapse to 1line of code
-        if qb_tn in tn_lookup:
-            new_statuses.append(tn_lookup[qb_tn])
-        elif qb_ch_num in ch_lookup:
-            new_statuses.append(ch_lookup[qb_ch_num])
-        else:
-            new_statuses.append(qb_status)
-    df["New Status"] = new_statuses
-
-    # Build records_to_import in the QB required format
-    # records_to_import = list of records, each record follows the format
-    # {fid1[str]: { "value": value1[str] }, fid2[str]: {"value": value2[str]} }
-    records_to_update = []
-    for index, row in df.iterrows():
-        if row["Status"] != row["New Status"]:
-            records_to_update.append({
-                "3": {"value": row["Test ID"]},
-                "76": {"value": row["New Status"]}
-            })
-    return records_to_update
-
-
-def import_to_qb(records_to_update: list[dict]):
-    # Prepare the API Request
-    url = f"https://api.quickbase.com/v1/records"
-    token = "bytuu3_wfx_53f6zibdnpvd5bavwjd26avh8"   # dbrobot user token
-    headers = {
-        "QB-Realm-Hostname": "https://ampriusinc.quickbase.com",
-        "Authorization": 'QB-USER-TOKEN ' + token,
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "to": "bqg4mcgfv",
-        "data": records_to_update,
-        "mergeFieldId": '3'
-    }
-    print(f"Sending {len(records_to_update)} record status updates to QuickBase...")
-    response = requests.post(url, headers=headers, json=payload)
-    if response.status_code == 200:
-        print("✅ Successfully imported data!")
-    else:
-        print("An error occurred.")
-        print(f"Status Code: {response.status_code}")
-        print("Response Body:")
-        print(response.text)
+        self.qb.push_updates(updates)
 
 
 if __name__ == "__main__":
-    datetime_str, msg_str = extract_arbin_log('Arbin_monitor.htm')
-    threshold = datetime.now() - timedelta(hours=4)
-    activities = extract_latest_activities(datetime_str, msg_str, threshold)
-    channel_updates, TN_updates, status_updates = get_updates(activities)
-    tester = 'Arbin #8'
-    df_qb = fetch_qb_records(tester, channel_updates)
-    records_to_import = calculate_status_changes(df_qb, channel_updates, TN_updates, status_updates)
-    import_to_qb(records_to_import)
+    manager = ArbinSyncManager(tester_name="Arbin #8", log_path="Arbin_monitor.htm")
+    manager.run()
