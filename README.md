@@ -24,15 +24,19 @@ Prerequisites:
 - A QuickBase User Token with permissions to modify the "Cell Test" table.
 
 Installation:
+
 Clone the repository:
 
 Bash
-git clone https://github.com/your-username/arbin-quickbase-sync.git
+git clone https://github.com/tuanhlv/updateArbinTA.git
+
 Install dependencies:
 
 Bash
 pip install pandas beautifulsoup4 requests
+
 Configuration
+
 Update the following variables in updateArbinTA.py:
 
 tester: Set this to your specific Arbin unit name (e.g., 'Arbin #8').
