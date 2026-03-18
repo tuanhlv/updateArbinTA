@@ -1,4 +1,5 @@
 Arbin-QuickBase Sync Tool
+
 A Python-based automation tool that monitors Arbin battery test logs and synchronizes test statuses (Start, Stop, Resume) with a QuickBase database.
 
 OVERVIEW
