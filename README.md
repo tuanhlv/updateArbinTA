@@ -23,25 +23,26 @@ Prerequisites:
 - Python installed on your machine.
 - A QuickBase User Token with permissions to modify the "Cell Test" table.
 
-Installation:
+1) Installation:
 
 Clone the repository:
 
 Bash
+
 git clone https://github.com/tuanhlv/updateArbinTA.git
 
-Install dependencies:
+2) Install dependencies:
 
 Bash
+
 pip install pandas beautifulsoup4 requests
 
-Configuration
+3) Configuration:
 
 Update the following variables in updateArbinTA.py:
-
-tester: Set this to your specific Arbin unit name (e.g., 'Arbin #8').
-token: Your QuickBase User Token.
-threshold: The look-back period for log entries (default is 4 hours).
+ - tester: Set this to your specific Arbin unit name (e.g., 'Arbin #8').
+ - token: Your QuickBase User Token.
+ - threshold: The look-back period for log entries (default is 4 hours).
 
 HOW IT WORKS
  - Extraction: The script reads the HTML log and extracts raw timestamps and message strings.
