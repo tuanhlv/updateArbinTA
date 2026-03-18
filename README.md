@@ -48,6 +48,9 @@ HOW IT WORKS
 ROADMAP
 
 [ ] Implement Object-Oriented Programming (OOP) refactor for better modularity.
+
 [ ] Add Pydantic models for data validation.
+
 [ ] Integrate automated error logging and email alerts.
+
 [ ] Containerize the application using Docker for cloud deployment.
