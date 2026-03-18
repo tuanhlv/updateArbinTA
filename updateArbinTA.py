@@ -86,7 +86,7 @@ class ArbinLogParser:
 class QuickBaseClient:
     def __init__(self, token: str, table_id: str):
         self.headers = {
-            "QB-Realm-Hostname": "https://ampriusinc.quickbase.com",
+            "QB-Realm-Hostname": "https://company.quickbase.com",
             "Authorization": f"QB-USER-TOKEN {token}",
             "Content-Type": "application/json"
         }
@@ -126,7 +126,7 @@ class ArbinSyncManager:
         self.tester_name = tester_name
         self.parser = ArbinLogParser(log_path)
         self.qb = QuickBaseClient(
-            token="bytuu3_wfx_53f6zibdnpvd5bavwjd26avh8",
+            token="qb_user_token",
             table_id="bqg4mcgfv"
         )
 
