@@ -115,9 +115,9 @@ class QuickBaseClient:
         }
         r = requests.post(f"{self.base_url}/records", headers=self.headers, json=payload)
         if r.status_code == 200:
-            print(f"✅ Successfully updated {len(updates)} records.")
+            print(f"Successfully updated {len(updates)} records.")
         else:
-            print(f"❌ Error: {r.text}")
+            print(f"Error: {r.text}")
 
 
 # 4. Orchestrator (Sync Manager)
@@ -139,6 +139,7 @@ class ArbinSyncManager:
 
         activities.sort(key=lambda x: x.time)
         latest_map = {a.channel: a for a in activities}
+        tn_lookup = {a.test_name: a.status_update for a in latest_map.values() if a.test_name != "N/A"}
 
         df = self.qb.fetch_records(self.tester_name, list(latest_map.keys()))
         if df.empty:
@@ -146,8 +147,6 @@ class ArbinSyncManager:
             return
 
         updates = []
-        tn_lookup = {a.test_name: a.status_update for a in activities if a.test_name != "N/A"}
-
         for _, row in df.iterrows():
             fid_map = {"438": "ch_id", "177": "tn", "3": "id", "76": "status"}
             data = {fid_map.get(col.split('.')[0], col): val for col, val in row.items()}
@@ -170,3 +169,4 @@ class ArbinSyncManager:
 if __name__ == "__main__":
     manager = ArbinSyncManager(tester_name="Arbin #8", log_path="Arbin_monitor.htm")
     manager.run()
+
